@@ -24,6 +24,12 @@ test('configuration dependency is resolved', async () => {
 
   const workspaceManifest = readYamlFile<{ configDependencies: Record<string, string> }>('pnpm-workspace.yaml')
   expect(workspaceManifest.configDependencies).toStrictEqual({
-    '@pnpm.e2e/foo': `100.0.0+${getIntegrity('@pnpm.e2e/foo', '100.0.0')}`,
+    '@pnpm.e2e/foo': {
+      version: '100.0.0',
+      resolution: {
+        integrity: getIntegrity('@pnpm.e2e/foo', '100.0.0'),
+        tarball: `${registry}@pnpm.e2e/foo/-/foo-100.0.0.tgz`,
+      },
+    },
   })
 })

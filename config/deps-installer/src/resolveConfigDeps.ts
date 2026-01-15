@@ -1,3 +1,4 @@
+import getNpmTarballUrl from 'get-npm-tarball-url'
 import { PnpmError } from '@pnpm/error'
 import { writeSettings } from '@pnpm/config.config-writer'
 import { createFetchFromRegistry, type CreateFetchFromRegistryOptions } from '@pnpm/fetch'
@@ -5,6 +6,7 @@ import { createNpmResolver, type ResolverFactoryOptions } from '@pnpm/npm-resolv
 import { createGetAuthHeaderByURI } from '@pnpm/network.auth-header'
 import { parseWantedDependency } from '@pnpm/parse-wanted-dependency'
 import { type ConfigDependencies } from '@pnpm/types'
+import { pickRegistryForPackage } from '@pnpm/pick-registry-for-package'
 import { installConfigDeps, type InstallConfigDepsOpts } from './installConfigDeps.js'
 
 export type ResolveConfigDepsOpts = CreateFetchFromRegistryOptions & ResolverFactoryOptions & InstallConfigDepsOpts & {
@@ -17,8 +19,7 @@ export async function resolveConfigDeps (configDeps: string[], opts: ResolveConf
   const fetch = createFetchFromRegistry(opts)
   const getAuthHeader = createGetAuthHeaderByURI({ allSettings: opts.userConfig!, userSettings: opts.userConfig })
   const { resolveFromNpm } = createNpmResolver(fetch, getAuthHeader, opts)
-  const configDependencies = opts.configDependencies ?? {}
-  const pkgTarballs: Record<string, string> = {}
+  const configDependencies = (opts.configDependencies ?? {})
   await Promise.all(configDeps.map(async (configDep) => {
     const wantedDep = parseWantedDependency(configDep)
     if (!wantedDep.alias) {
@@ -29,16 +30,24 @@ export async function resolveConfigDeps (configDeps: string[], opts: ResolveConf
       preferredVersions: {},
       projectDir: opts.rootDir,
     })
-    if (resolution?.resolution == null || !('integrity' in resolution?.resolution)) {
+    if (resolution?.resolution == null || !('integrity' in resolution?.resolution) || !resolution.resolution.integrity) {
       throw new PnpmError('BAD_CONFIG_DEP', `Cannot install ${configDep} as configuration dependency because it has no integrity`)
     }
-    configDependencies[wantedDep.alias] = `${resolution?.manifest?.version}+${resolution.resolution.integrity}`
-    if (isValidHttpUrl(resolution.resolution.tarball)) {
-      pkgTarballs[wantedDep.alias] = resolution.resolution.tarball
+
+    const pkgName = wantedDep.alias
+    const version = resolution.manifest.version
+    const registry = pickRegistryForPackage(opts.registries, pkgName)
+    const tarballUrl = resolution.resolution.tarball
+    configDependencies[pkgName] = {
+      version,
+      resolution: {
+        tarball: isValidHttpUrl(tarballUrl) ? tarballUrl : getNpmTarballUrl(pkgName, version, { registry }),
+        integrity: resolution.resolution.integrity,
+      },
     }
   }))
   await writeSettings({
-    ...opts,
+    ...opts, // although not specified in the type, this may have rootProjectManifest
     rootProjectManifestDir: opts.rootDir,
     workspaceDir: opts.rootDir,
     updatedSettings: {
@@ -46,11 +55,6 @@ export async function resolveConfigDeps (configDeps: string[], opts: ResolveConf
     },
   })
 
-  Object.entries(pkgTarballs).forEach(([pkg, tarball]) => {
-    // get-npm-tarball-url cannot determine the tarball URL of a private npm package hosted on GitHub Packages registry
-    // therefore, we need to store the tarball URL separately for installConfigDeps to fetch correctly
-    configDependencies[pkg] += ` ${tarball}`
-  })
   await installConfigDeps(configDependencies, opts)
 }
 
